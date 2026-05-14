@@ -52,6 +52,9 @@ class SolutionOption(BaseModel):
     method: str
     reason: str
     search_keyword: str
+    steps: list[str] = Field(default_factory=list)
+    required_items: list[str] = Field(default_factory=list)
+    cautions: list[str] = Field(default_factory=list)
 
 
 class ProblemAnalysis(BaseModel):
@@ -83,6 +86,27 @@ class Product(BaseModel):
 class ProductSearchResult(BaseModel):
     keyword: str
     products: list[Product]
+
+
+class PlanProductsRequest(BaseModel):
+    query: str = Field(..., min_length=2)
+    plan_index: int = Field(..., ge=1)
+    missing_items: list[str] = Field(default_factory=list)
+    budget: str | None = None
+    preference: str | None = None
+
+
+class ItemProductGroup(BaseModel):
+    item_name: str
+    keyword: str
+    products: list[Product]
+
+
+class PlanProductsResult(BaseModel):
+    analysis: ProblemAnalysis
+    selected_plan: SolutionOption
+    missing_items: list[str]
+    product_groups: list[ItemProductGroup]
 
 
 class RecommendationItem(BaseModel):
@@ -595,16 +619,76 @@ def llm_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
 
 def fallback_analysis(payload: ShoppingRequest) -> ProblemAnalysis:
     q = payload.query.lower()
-    if "rust" in q or "鐵鏽" in payload.query:
+    if "發霉" in payload.query or "黴" in payload.query or "mold" in q or "mould" in q:
         solutions = [
-            SolutionOption(method="除鏽清潔劑", reason="可直接處理表面鐵鏽與鏽斑。", search_keyword="除鏽 清潔劑"),
-            SolutionOption(method="砂紙與防鏽漆", reason="適合金屬表面修復與後續防鏽。", search_keyword="防鏽漆"),
+            SolutionOption(
+                method="白醋＋小蘇打清潔",
+                reason="適合磁磚、浴室或可碰水地板的輕中度霉斑，味道較低且材料容易取得。",
+                search_keyword="白醋 小蘇打 清潔刷",
+                steps=[
+                    "先把地板表面灰塵與毛髮清掉。",
+                    "將白醋噴在發霉處，靜置約 10 分鐘。",
+                    "撒上小蘇打後用刷子刷洗，再用清水擦乾。",
+                ],
+                required_items=["白醋", "小蘇打", "清潔刷", "手套", "抹布"],
+                cautions=["不建議用在怕酸或未密封的天然石材。"],
+            ),
+            SolutionOption(
+                method="稀釋漂白水消毒",
+                reason="殺菌力較強，適合霉斑較明顯、需要消毒的地板區域。",
+                search_keyword="漂白水 手套 清潔刷",
+                steps=[
+                    "將漂白水與水約 1:99 稀釋。",
+                    "噴灑或拖在發霉區域，靜置 5 到 10 分鐘。",
+                    "刷洗後用清水擦過並保持通風乾燥。",
+                ],
+                required_items=["漂白水", "水", "手套", "口罩", "清潔刷", "抹布"],
+                cautions=["不可與白醋、酸性清潔劑或其他清潔劑混用；使用時保持通風。"],
+            ),
+            SolutionOption(
+                method="除霉清潔劑處理",
+                reason="操作最簡單，適合想快速處理霉斑並購買現成清潔用品的人。",
+                search_keyword="除霉清潔劑 手套",
+                steps=[
+                    "依產品說明噴在發霉處。",
+                    "等待指定時間後刷洗或擦拭。",
+                    "最後擦乾並讓地板保持通風。",
+                ],
+                required_items=["除霉清潔劑", "手套", "口罩", "清潔刷", "抹布"],
+                cautions=["使用前先在不明顯角落測試，避免地板材質變色。"],
+            ),
+        ]
+        problem = "地板發霉"
+    elif "rust" in q or "鐵鏽" in payload.query:
+        solutions = [
+            SolutionOption(
+                method="除鏽清潔劑",
+                reason="可直接處理表面鐵鏽與鏽斑。",
+                search_keyword="除鏽 清潔劑",
+                required_items=["除鏽清潔劑", "手套", "清潔刷", "抹布"],
+            ),
+            SolutionOption(
+                method="砂紙與防鏽漆",
+                reason="適合金屬表面修復與後續防鏽。",
+                search_keyword="防鏽漆",
+                required_items=["砂紙", "防鏽漆", "手套", "刷子"],
+            ),
         ]
         problem = "鐵鏽清潔"
     elif "除濕" in payload.query or "潮濕" in payload.query or "dehumid" in q:
         solutions = [
-            SolutionOption(method="小型除濕機", reason="適合租屋處穩定降低室內濕度。", search_keyword="小型除濕機"),
-            SolutionOption(method="防潮盒", reason="成本低，適合衣櫃或小角落。", search_keyword="防潮盒"),
+            SolutionOption(
+                method="小型除濕機",
+                reason="適合租屋處穩定降低室內濕度。",
+                search_keyword="小型除濕機",
+                required_items=["小型除濕機"],
+            ),
+            SolutionOption(
+                method="防潮盒",
+                reason="成本低，適合衣櫃或小角落。",
+                search_keyword="防潮盒",
+                required_items=["防潮盒", "除濕包"],
+            ),
         ]
         problem = "室內潮濕"
     else:
@@ -626,7 +710,9 @@ def analyze_problem(payload: ShoppingRequest) -> ProblemAnalysis:
     system_prompt = (
         "You are the Problem Analyzer and Solution Generator of a shopping agent. "
         "Answer in Traditional Chinese. Return JSON with original_query, problem, "
-        "intent, user_context, and solutions. Each solution needs method, reason, search_keyword."
+        "intent, user_context, and solutions. Provide 2 to 4 different solution plans. "
+        "Each solution needs method, reason, search_keyword, steps, required_items, and cautions. "
+        "Do not jump directly to one product; first provide practical plans the user can choose from."
     )
     try:
         data = llm_json(system_prompt, payload.model_dump_json())
@@ -841,6 +927,282 @@ def run_agent(payload: ShoppingRequest) -> AgentRunResult:
     )
 
 
+def item_search_keyword(item_name: str) -> str:
+    keyword_map = {
+        "手套": "清潔手套 橡膠手套",
+        "口罩": "清潔口罩 防護口罩",
+        "清潔刷": "清潔刷 地板刷",
+        "抹布": "清潔抹布",
+        "漂白水": "漂白水",
+        "白醋": "白醋",
+        "小蘇打": "小蘇打",
+    }
+    return keyword_map.get(item_name, item_name)
+
+
+def recommend_missing_plan_items(payload: PlanProductsRequest) -> PlanProductsResult:
+    analysis = analyze_problem(
+        ShoppingRequest(query=payload.query, budget=payload.budget, preference=payload.preference)
+    )
+    if payload.plan_index > len(analysis.solutions):
+        raise HTTPException(status_code=400, detail="選擇的計畫不存在。")
+
+    selected_plan = analysis.solutions[payload.plan_index - 1]
+    missing_items = [item.strip() for item in payload.missing_items if item.strip()]
+    if not missing_items:
+        missing_items = selected_plan.required_items
+    if not missing_items:
+        missing_items = [selected_plan.search_keyword]
+
+    product_groups = []
+    for item in missing_items:
+        keyword = item_search_keyword(item)
+        result = search_products(keyword, ["pchome"])
+        product_groups.append(
+            ItemProductGroup(
+                item_name=item,
+                keyword=keyword,
+                products=result.products[:3],
+            )
+        )
+
+    return PlanProductsResult(
+        analysis=analysis,
+        selected_plan=selected_plan,
+        missing_items=missing_items,
+        product_groups=product_groups,
+    )
+
+
+INDEX_HTML = """
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 智慧購物代理</title>
+  <style>
+    body { margin: 0; font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif; background: #f6f7f9; color: #1f2937; }
+    header { background: #fff; border-bottom: 1px solid #d8dde6; }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    .topbar { padding: 18px 0; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+    h1 { margin: 0; font-size: 24px; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    main { padding: 24px 0 40px; }
+    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+    section, .card { background: #fff; border: 1px solid #d8dde6; border-radius: 8px; padding: 18px; }
+    label { display: block; font-weight: 700; margin: 14px 0 6px; }
+    textarea, input { width: 100%; border: 1px solid #d8dde6; border-radius: 6px; padding: 10px; font: inherit; box-sizing: border-box; }
+    textarea { min-height: 120px; resize: vertical; }
+    button { border: 0; border-radius: 6px; padding: 10px 14px; font: inherit; font-weight: 700; background: #0f766e; color: #fff; cursor: pointer; }
+    button.secondary { background: #475569; }
+    button.full { width: 100%; margin-top: 16px; }
+    button:disabled { opacity: .65; cursor: wait; }
+    .muted { color: #64748b; font-size: 14px; }
+    .status { min-height: 22px; margin-top: 12px; color: #64748b; }
+    .error { color: #b91c1c; }
+    .grid { display: grid; gap: 14px; }
+    .plans, .products { display: grid; gap: 12px; }
+    .plan { border: 1px solid #d8dde6; border-radius: 8px; padding: 14px; background: #fff; }
+    .items { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .item { border: 1px solid #d8dde6; border-radius: 999px; padding: 6px 10px; background: #f8fafc; }
+    .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .product { border: 1px solid #d8dde6; border-radius: 8px; padding: 12px; background: #fff; }
+    .product img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #f8fafc; border-radius: 6px; border: 1px solid #d8dde6; }
+    .price { font-size: 22px; font-weight: 800; color: #115e59; margin: 6px 0; }
+    a { color: #0f766e; }
+    @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .topbar { align-items: flex-start; flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>AI 智慧購物代理</h1>
+        <div class="muted">先提供多個解決計畫，選定方法後只推薦你缺少的物品。</div>
+      </div>
+      <a href="/docs">API 文件</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="layout">
+      <section>
+        <h2>輸入問題</h2>
+        <form id="query-form">
+          <label for="query">你想解決什麼問題？</label>
+          <textarea id="query" name="query" required>找除地板發霉的方法</textarea>
+          <label for="budget">預算</label>
+          <input id="budget" name="budget" placeholder="例如 NTD1000">
+          <label for="preference">偏好條件</label>
+          <input id="preference" name="preference" placeholder="例如 不想用味道太重的清潔劑">
+          <button id="analyze-button" class="full" type="submit">產生解決計畫</button>
+          <div id="status" class="status">服務已就緒。</div>
+        </form>
+      </section>
+
+      <div class="grid">
+        <section>
+          <h2>可選擇的解決計畫</h2>
+          <div id="plans" class="plans muted">送出問題後，這裡會顯示多個方法。</div>
+        </section>
+
+        <section>
+          <h2>我缺少的物品</h2>
+          <div id="selected-plan" class="muted">請先選擇一個計畫。</div>
+          <div id="missing-items" class="items"></div>
+          <button id="recommend-button" class="full secondary" type="button" disabled>推薦缺少物品</button>
+        </section>
+
+        <section>
+          <h2>商品推薦</h2>
+          <div id="products" class="products muted">選擇缺少物品後，這裡會顯示 PChome 商品。</div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const form = document.querySelector("#query-form");
+    const statusEl = document.querySelector("#status");
+    const plansEl = document.querySelector("#plans");
+    const selectedPlanEl = document.querySelector("#selected-plan");
+    const missingItemsEl = document.querySelector("#missing-items");
+    const productsEl = document.querySelector("#products");
+    const analyzeButton = document.querySelector("#analyze-button");
+    const recommendButton = document.querySelector("#recommend-button");
+    let currentAnalysis = null;
+    let selectedPlanIndex = null;
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+    }
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function renderPlan(plan, index) {
+      const steps = (plan.steps || []).map(step => `<li>${escapeHtml(step)}</li>`).join("");
+      const cautions = (plan.cautions || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
+      return `
+        <article class="plan">
+          <h3>方案 ${index + 1}：${escapeHtml(plan.method)}</h3>
+          <p>${escapeHtml(plan.reason)}</p>
+          ${steps ? `<strong>做法</strong><ol>${steps}</ol>` : ""}
+          ${cautions ? `<strong>注意事項</strong><ul>${cautions}</ul>` : ""}
+          <button type="button" data-plan-index="${index + 1}">選擇這個計畫</button>
+        </article>
+      `;
+    }
+
+    function renderMissingItems(plan) {
+      selectedPlanEl.innerHTML = `<strong>已選擇：</strong>${escapeHtml(plan.method)}<p>${escapeHtml(plan.reason)}</p>`;
+      const items = plan.required_items || [];
+      missingItemsEl.innerHTML = items.map(item => `
+        <label class="item">
+          <input type="checkbox" value="${escapeHtml(item)}">
+          我沒有 ${escapeHtml(item)}
+        </label>
+      `).join("");
+      recommendButton.disabled = false;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      analyzeButton.disabled = true;
+      recommendButton.disabled = true;
+      productsEl.textContent = "尚未選擇缺少物品。";
+      setStatus("正在產生解決計畫...");
+      const body = {
+        query: form.query.value.trim(),
+        budget: form.budget.value.trim() || null,
+        preference: form.preference.value.trim() || null
+      };
+      try {
+        const response = await fetch("/agent/analyze", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        currentAnalysis = await response.json();
+        selectedPlanIndex = null;
+        plansEl.className = "plans";
+        plansEl.innerHTML = currentAnalysis.solutions.map(renderPlan).join("");
+        selectedPlanEl.textContent = "請選擇一個計畫。";
+        missingItemsEl.innerHTML = "";
+        setStatus("請選擇你想採用的計畫。");
+      } catch (error) {
+        setStatus("發生錯誤：" + error.message, true);
+      } finally {
+        analyzeButton.disabled = false;
+      }
+    });
+
+    plansEl.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-plan-index]");
+      if (!button || !currentAnalysis) return;
+      selectedPlanIndex = Number(button.dataset.planIndex);
+      renderMissingItems(currentAnalysis.solutions[selectedPlanIndex - 1]);
+      setStatus("勾選你缺少的物品後，再按推薦。");
+    });
+
+    recommendButton.addEventListener("click", async () => {
+      if (!selectedPlanIndex) return;
+      const checked = [...missingItemsEl.querySelectorAll("input:checked")].map(input => input.value);
+      recommendButton.disabled = true;
+      productsEl.textContent = "正在搜尋你缺少的物品...";
+      setStatus("正在搜尋 PChome 商品...");
+      try {
+        const response = await fetch("/agent/plan-products", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            query: form.query.value.trim(),
+            budget: form.budget.value.trim() || null,
+            preference: form.preference.value.trim() || null,
+            plan_index: selectedPlanIndex,
+            missing_items: checked
+          })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        productsEl.className = "products";
+        productsEl.innerHTML = data.product_groups.map(group => `
+          <div class="card">
+            <h3>缺少物品：${escapeHtml(group.item_name)}</h3>
+            <div class="product-grid">
+              ${group.products.map(product => `
+                <article class="product">
+                  ${product.image ? `<img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.title)}">` : ""}
+                  <h3>${escapeHtml(product.title)}</h3>
+                  <div class="price">NTD ${escapeHtml(product.price)}</div>
+                  <div class="muted">${escapeHtml(product.platform)}</div>
+                  <a href="${escapeHtml(product.url)}" target="_blank" rel="noreferrer">查看商品</a>
+                </article>
+              `).join("")}
+            </div>
+          </div>
+        `).join("");
+        setStatus("完成。");
+      } catch (error) {
+        productsEl.textContent = "搜尋失敗。";
+        setStatus("發生錯誤：" + error.message, true);
+      } finally {
+        recommendButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
+
 @app.get("/", response_class=HTMLResponse, summary="中文首頁")
 def home() -> HTMLResponse:
     return HTMLResponse(INDEX_HTML)
@@ -900,6 +1262,11 @@ def agent_recommend(payload: ProductSearchResult) -> RecommendationResult:
 @app.post("/agent/run", response_model=AgentRunResult)
 def agent_run(payload: ShoppingRequest) -> AgentRunResult:
     return run_agent(payload)
+
+
+@app.post("/agent/plan-products", response_model=PlanProductsResult)
+def agent_plan_products(payload: PlanProductsRequest) -> PlanProductsResult:
+    return recommend_missing_plan_items(payload)
 
 
 @app.post("/line/webhook")

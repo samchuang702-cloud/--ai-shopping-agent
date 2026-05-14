@@ -97,17 +97,35 @@ http://127.0.0.1:8001/
 
 按下「開始分析並推薦」，系統會顯示：
 
-- AI 問題分析
-- 搜尋方向
-- PChome 真實商品
-- 商品圖片
-- 價格
-- 商品連結
-- 比價與提醒
+- 多個解決計畫
+- 每個計畫的做法
+- 每個計畫需要的物品
+- 勾選你缺少的物品
+- 根據缺少物品搜尋 PChome 真實商品
+- 商品圖片、價格與商品連結
+
+範例流程：
+
+```text
+輸入：找除地板發霉的方法
+-> 系統提供多個方案，例如白醋＋小蘇打、稀釋漂白水、除霉清潔劑
+-> 選擇「稀釋漂白水消毒」
+-> 勾選缺少「漂白水」和「手套」
+-> 系統推薦 PChome 上的漂白水與清潔手套商品
+```
 
 ## LINE 使用方式
 
 先啟動 FastAPI，再用 ngrok 開公開網址：
+
+第一個終端機啟動 FastAPI：
+
+```powershell
+cd C:\Users\samch\Desktop\ai-shopping-agent
+.\.venv\Scripts\python.exe -m uvicorn app:app --reload --host 127.0.0.1 --port 8001
+```
+
+第二個終端機啟動 ngrok：
 
 ```powershell
 ngrok http 8001
@@ -117,6 +135,12 @@ ngrok 會顯示類似：
 
 ```text
 Forwarding  https://xxxx.ngrok-free.dev -> http://localhost:8001
+```
+
+你要連的公開網頁網址是：
+
+```text
+https://xxxx.ngrok-free.dev/
 ```
 
 到 LINE Developers 後台，把 Webhook URL 設成：
@@ -143,6 +167,8 @@ https://xxxx.ngrok-free.dev/line/webhook
 - AI 判斷文字
 - PChome 商品卡片
 - `查看商品` 按鈕
+
+注意：FastAPI 和 ngrok 都要同時保持開啟。只要關掉其中一個，網頁或 LINE webhook 就會連不上。
 
 ## 主要 API
 
