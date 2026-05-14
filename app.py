@@ -1,0 +1,942 @@
+import base64
+import hashlib
+import hmac
+import json
+import os
+from typing import Any, Literal
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from openai import OpenAI, OpenAIError
+from pydantic import BaseModel, Field, ValidationError
+
+
+load_dotenv()
+
+app = FastAPI(
+    title="AI 智慧購物代理",
+    description="串接 LINE、AI 決策、商品搜尋、比價與推薦輸出的智慧購物代理系統。",
+    version="0.2.0",
+)
+
+Platform = Literal["momo", "shopee", "pchome", "yahoo", "sample"]
+PCHOME_SEARCH_URL = "https://ecshweb.pchome.com.tw/search/v3.3/all/results"
+PCHOME_PRODUCT_URL = "https://24h.pchome.com.tw/prod/{product_id}"
+PCHOME_IMAGE_HOST = "https://cs-a.ecimg.tw"
+LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+
+
+class ShoppingRequest(BaseModel):
+    query: str = Field(..., min_length=2, description="The shopping need or question.")
+    budget: str | None = Field(None, description="Optional budget, such as NTD30000.")
+    preference: str | None = Field(None, description="Optional brand, usage, or feature preference.")
+
+
+class ProductSuggestion(BaseModel):
+    name: str
+    reason: str
+    key_features: list[str] = Field(default_factory=list)
+    cautions: list[str] = Field(default_factory=list)
+
+
+class ShoppingAdvice(BaseModel):
+    problem: str
+    buying_criteria: list[str]
+    solutions: list[ProductSuggestion]
+    next_questions: list[str] = Field(default_factory=list)
+
+
+class SolutionOption(BaseModel):
+    method: str
+    reason: str
+    search_keyword: str
+
+
+class ProblemAnalysis(BaseModel):
+    original_query: str
+    problem: str
+    intent: str
+    user_context: list[str] = Field(default_factory=list)
+    solutions: list[SolutionOption] = Field(default_factory=list)
+
+
+class DecisionResult(BaseModel):
+    selected_solution: SolutionOption
+    decision_reason: str
+    search_plan: list[str]
+    platforms: list[Platform] = Field(default_factory=lambda: ["pchome"])
+
+
+class Product(BaseModel):
+    platform: Platform
+    title: str
+    price: int
+    rating: float | None = None
+    sales: int | None = None
+    shipping_fee: int | None = None
+    image: str | None = None
+    url: str
+
+
+class ProductSearchResult(BaseModel):
+    keyword: str
+    products: list[Product]
+
+
+class RecommendationItem(BaseModel):
+    product: Product
+    score: float
+    reason: str
+
+
+class RecommendationResult(BaseModel):
+    best_product: RecommendationItem
+    ranked_products: list[RecommendationItem]
+    comparison_summary: list[str]
+    caveats: list[str] = Field(default_factory=list)
+
+
+class AgentRunResult(BaseModel):
+    analysis: ProblemAnalysis
+    decision: DecisionResult
+    product_search: ProductSearchResult
+    recommendation: RecommendationResult
+    line_flex_message: dict[str, Any]
+
+
+class LineWebhookEvent(BaseModel):
+    type: str
+    replyToken: str | None = None
+    message: dict[str, Any] | None = None
+
+
+class LineWebhookPayload(BaseModel):
+    events: list[LineWebhookEvent] = Field(default_factory=list)
+
+
+SAMPLE_PRODUCTS: list[Product] = [
+    Product(
+        platform="momo",
+        title="Panasonic 12L 小型除濕機",
+        price=3990,
+        rating=4.8,
+        sales=1260,
+        shipping_fee=0,
+        image="https://example.com/panasonic-dehumidifier.jpg",
+        url="https://example.com/momo/panasonic-dehumidifier",
+    ),
+    Product(
+        platform="shopee",
+        title="Toshiba 10L 小坪數除濕機",
+        price=3590,
+        rating=4.7,
+        sales=980,
+        shipping_fee=60,
+        image="https://example.com/toshiba-dehumidifier.jpg",
+        url="https://example.com/shopee/toshiba-dehumidifier",
+    ),
+    Product(
+        platform="pchome",
+        title="Whirlpool 12L 靜音除濕機",
+        price=4180,
+        rating=4.6,
+        sales=620,
+        shipping_fee=0,
+        image="https://example.com/whirlpool-dehumidifier.jpg",
+        url="https://example.com/pchome/whirlpool-dehumidifier",
+    ),
+    Product(
+        platform="momo",
+        title="浴室金屬除鏽凝膠",
+        price=299,
+        rating=4.5,
+        sales=2100,
+        shipping_fee=0,
+        image="https://example.com/rust-remover.jpg",
+        url="https://example.com/momo/rust-remover",
+    ),
+    Product(
+        platform="shopee",
+        title="強效鐵鏽清潔噴劑",
+        price=199,
+        rating=4.4,
+        sales=3500,
+        shipping_fee=45,
+        image="https://example.com/rust-spray.jpg",
+        url="https://example.com/shopee/rust-spray",
+    ),
+    Product(
+        platform="pchome",
+        title="14 吋學生程式設計輕薄筆電",
+        price=29900,
+        rating=4.6,
+        sales=180,
+        shipping_fee=0,
+        image="https://example.com/student-laptop.jpg",
+        url="https://example.com/pchome/student-laptop",
+    ),
+]
+
+
+INDEX_HTML = """
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 智慧購物代理</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde6;
+      --text: #1f2937;
+      --muted: #64748b;
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+      --danger: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+    .wrap {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+    .nav {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .nav a {
+      color: var(--accent-strong);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: #fff;
+    }
+    main { padding: 24px 0 40px; }
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    section, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    label {
+      display: block;
+      font-weight: 700;
+      margin: 14px 0 6px;
+    }
+    textarea, input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+    textarea { min-height: 112px; resize: vertical; }
+    button {
+      width: 100%;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 6px;
+      padding: 11px 14px;
+      font: inherit;
+      font-weight: 700;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-strong); }
+    button:disabled { opacity: .65; cursor: wait; }
+    .hint, .muted { color: var(--muted); font-size: 14px; }
+    .status {
+      margin-top: 12px;
+      min-height: 22px;
+      color: var(--muted);
+    }
+    .error { color: var(--danger); }
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+    .product {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+    .product img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: contain;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      margin-bottom: 10px;
+    }
+    .product h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+    .price {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--accent-strong);
+      margin: 6px 0;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 13px;
+      color: var(--muted);
+      margin: 0 6px 6px 0;
+    }
+    ul { padding-left: 20px; margin: 8px 0 0; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      max-height: 280px;
+      overflow: auto;
+    }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>AI 智慧購物代理</h1>
+        <div class="hint">從使用者需求開始，完成 AI 分析、決策、商品比較與推薦輸出。</div>
+      </div>
+      <nav class="nav" aria-label="頁面連結">
+        <a href="/docs">API 文件</a>
+        <a href="/health">健康檢查</a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="layout">
+      <section>
+        <h2>輸入購物需求</h2>
+        <form id="agent-form">
+          <label for="query">你想解決什麼問題？</label>
+          <textarea id="query" name="query" required>推薦適合租屋處的小型除濕機</textarea>
+
+          <label for="budget">預算</label>
+          <input id="budget" name="budget" value="NTD5000" placeholder="例如 NTD5000">
+
+          <label for="preference">偏好條件</label>
+          <input id="preference" name="preference" placeholder="例如 小坪數、安靜、低耗電">
+
+          <button id="submit-button" type="submit">開始分析並推薦</button>
+          <div id="status" class="status">服務已就緒。</div>
+        </form>
+      </section>
+
+      <div class="grid">
+        <section>
+          <h2>AI 分析結果</h2>
+          <div id="analysis" class="muted">送出需求後會顯示問題分析與決策結果。</div>
+        </section>
+
+        <section>
+          <h2>推薦商品</h2>
+          <div id="products" class="cards"></div>
+        </section>
+
+        <section>
+          <h2>比價與提醒</h2>
+          <div id="summary" class="muted">尚未產生比價摘要。</div>
+        </section>
+
+        <section>
+          <h2>LINE Flex Message 預覽資料</h2>
+          <pre id="line-json">尚未產生 LINE 訊息。</pre>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const form = document.querySelector("#agent-form");
+    const statusEl = document.querySelector("#status");
+    const analysisEl = document.querySelector("#analysis");
+    const productsEl = document.querySelector("#products");
+    const summaryEl = document.querySelector("#summary");
+    const lineJsonEl = document.querySelector("#line-json");
+    const submitButton = document.querySelector("#submit-button");
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderList(items) {
+      if (!items || items.length === 0) return "<div class='muted'>無資料</div>";
+      return `<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    }
+
+    function renderProducts(items) {
+      productsEl.innerHTML = items.map(item => {
+        const product = item.product;
+        const image = product.image ? `<img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.title)}">` : "";
+        return `
+          <article class="product">
+            ${image}
+            <h3>${escapeHtml(product.title)}</h3>
+            <div class="price">NTD ${escapeHtml(product.price)}</div>
+            <div>
+              <span class="tag">${escapeHtml(product.platform)}</span>
+              <span class="tag">分數 ${escapeHtml(item.score)}</span>
+              <span class="tag">評分 ${escapeHtml(product.rating ?? "無")}</span>
+              <span class="tag">銷量 ${escapeHtml(product.sales ?? "無")}</span>
+            </div>
+            <p>${escapeHtml(item.reason)}</p>
+            <a href="${escapeHtml(product.url)}" target="_blank" rel="noreferrer">查看商品</a>
+          </article>
+        `;
+      }).join("");
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      submitButton.disabled = true;
+      statusEl.textContent = "正在分析需求與整理推薦...";
+      statusEl.className = "status";
+
+      const body = {
+        query: form.query.value.trim(),
+        budget: form.budget.value.trim() || null,
+        preference: form.preference.value.trim() || null
+      };
+
+      try {
+        const response = await fetch("/agent/run", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+
+        analysisEl.innerHTML = `
+          <div><strong>原始需求：</strong>${escapeHtml(data.analysis.original_query)}</div>
+          <div><strong>問題判斷：</strong>${escapeHtml(data.analysis.problem)}</div>
+          <div><strong>選擇方案：</strong>${escapeHtml(data.decision.selected_solution.method)}</div>
+          <div><strong>決策原因：</strong>${escapeHtml(data.decision.decision_reason)}</div>
+          <div><strong>搜尋計畫：</strong>${renderList(data.decision.search_plan)}</div>
+        `;
+        renderProducts(data.recommendation.ranked_products);
+        summaryEl.innerHTML = `
+          <div><strong>最佳推薦：</strong>${escapeHtml(data.recommendation.best_product.product.title)}</div>
+          <div>${renderList(data.recommendation.comparison_summary)}</div>
+          <div class="muted">${renderList(data.recommendation.caveats)}</div>
+        `;
+        lineJsonEl.textContent = JSON.stringify(data.line_flex_message, null, 2);
+        statusEl.textContent = "完成。";
+      } catch (error) {
+        statusEl.textContent = "發生錯誤：" + error.message;
+        statusEl.className = "status error";
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+def get_client() -> OpenAI:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not set. Create a .env file and add your API key.",
+        )
+    return OpenAI(api_key=api_key)
+
+
+def verify_line_signature(body: bytes, signature: str | None) -> None:
+    if os.getenv("LINE_VERIFY_SIGNATURE", "false").lower() != "true":
+        return
+
+    channel_secret = os.getenv("LINE_CHANNEL_SECRET")
+    if not channel_secret or not signature:
+        return
+
+    digest = hmac.new(channel_secret.encode("utf-8"), body, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode("utf-8")
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=401, detail="LINE 簽章驗證失敗。")
+
+
+def reply_to_line(reply_token: str | None, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    access_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    if not access_token:
+        return {"sent": False, "reason": "LINE_CHANNEL_ACCESS_TOKEN 未設定。"}
+    if not reply_token:
+        return {"sent": False, "reason": "沒有 replyToken。"}
+    if reply_token.startswith("dummy"):
+        return {"sent": False, "reason": "本機 dummy replyToken，略過 LINE Reply API。"}
+
+    response = httpx.post(
+        LINE_REPLY_URL,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={"replyToken": reply_token, "messages": messages},
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        return {
+            "sent": False,
+            "status_code": response.status_code,
+            "reason": response.text[:500],
+        }
+    return {"sent": True, "status_code": response.status_code}
+
+
+def parse_json_object(content: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "The AI response was not valid JSON.", "raw_response": content},
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="The AI response JSON must be an object.")
+    return parsed
+
+
+def llm_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    client = get_client()
+    try:
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except OpenAIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenAI request failed: {exc.__class__.__name__}",
+        ) from exc
+
+    return parse_json_object(response.choices[0].message.content or "{}")
+
+
+def fallback_analysis(payload: ShoppingRequest) -> ProblemAnalysis:
+    q = payload.query.lower()
+    if "rust" in q or "鐵鏽" in payload.query:
+        solutions = [
+            SolutionOption(method="除鏽清潔劑", reason="可直接處理表面鐵鏽與鏽斑。", search_keyword="除鏽 清潔劑"),
+            SolutionOption(method="砂紙與防鏽漆", reason="適合金屬表面修復與後續防鏽。", search_keyword="防鏽漆"),
+        ]
+        problem = "鐵鏽清潔"
+    elif "除濕" in payload.query or "潮濕" in payload.query or "dehumid" in q:
+        solutions = [
+            SolutionOption(method="小型除濕機", reason="適合租屋處穩定降低室內濕度。", search_keyword="小型除濕機"),
+            SolutionOption(method="防潮盒", reason="成本低，適合衣櫃或小角落。", search_keyword="防潮盒"),
+        ]
+        problem = "室內潮濕"
+    else:
+        solutions = [
+            SolutionOption(method="商品搜尋推薦", reason="符合使用者提出的購物需求。", search_keyword=payload.query),
+        ]
+        problem = payload.query
+
+    return ProblemAnalysis(
+        original_query=payload.query,
+        problem=problem,
+        intent="尋找合適商品解決方案",
+        user_context=[value for value in [payload.budget, payload.preference] if value],
+        solutions=solutions,
+    )
+
+
+def analyze_problem(payload: ShoppingRequest) -> ProblemAnalysis:
+    system_prompt = (
+        "You are the Problem Analyzer and Solution Generator of a shopping agent. "
+        "Answer in Traditional Chinese. Return JSON with original_query, problem, "
+        "intent, user_context, and solutions. Each solution needs method, reason, search_keyword."
+    )
+    try:
+        data = llm_json(system_prompt, payload.model_dump_json())
+        return ProblemAnalysis.model_validate(data)
+    except (HTTPException, ValidationError):
+        return fallback_analysis(payload)
+
+
+def decide_search(analysis: ProblemAnalysis) -> DecisionResult:
+    selected = analysis.solutions[0] if analysis.solutions else SolutionOption(
+        method="商品搜尋",
+        reason="目前沒有更明確的解決方案。",
+        search_keyword=analysis.problem,
+    )
+    return DecisionResult(
+        selected_solution=selected,
+        decision_reason=f"選擇「{selected.method}」，因為它最符合使用者目前的問題。",
+        search_plan=[
+            f"在 PChome 搜尋 {selected.search_keyword}",
+            "整理商品名稱、價格、評分、銷量、運費、圖片與網址。",
+            "移除無效資料，依價格、評分與銷量排序。",
+            "momo 與 Shopee 搜尋器尚未串接，下一階段再加入。",
+        ],
+    )
+
+
+def normalized_text(value: str) -> str:
+    return value.lower().replace("-", " ")
+
+
+def pchome_image_url(path: str | None) -> str | None:
+    if not path:
+        return None
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if path.startswith("/"):
+        return f"{PCHOME_IMAGE_HOST}{path}"
+    return f"{PCHOME_IMAGE_HOST}/{path}"
+
+
+def collect_pchome_products(keyword: str, limit: int = 10) -> list[Product]:
+    try:
+        response = httpx.get(
+            PCHOME_SEARCH_URL,
+            params={"q": keyword, "page": 1, "sort": "sale/dc"},
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 AI-Shopping-Agent/0.2"},
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"PChome 搜尋失敗：{exc.__class__.__name__}") from exc
+
+    products: list[Product] = []
+    for item in data.get("prods", [])[:limit]:
+        product_id = str(item.get("Id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        price = item.get("price")
+        if not product_id or not name or price is None:
+            continue
+        try:
+            price_int = int(price)
+        except (TypeError, ValueError):
+            continue
+
+        products.append(
+            Product(
+                platform="pchome",
+                title=name,
+                price=price_int,
+                rating=None,
+                sales=None,
+                shipping_fee=0,
+                image=pchome_image_url(item.get("picB") or item.get("picS")),
+                url=PCHOME_PRODUCT_URL.format(product_id=product_id),
+            )
+        )
+
+    return products
+
+
+def search_products(keyword: str, platforms: list[Platform] | None = None) -> ProductSearchResult:
+    enabled = set(platforms or ["momo", "shopee", "pchome"])
+    if "pchome" in enabled:
+        products = collect_pchome_products(keyword)
+        if products:
+            return ProductSearchResult(keyword=keyword, products=products)
+
+    keyword_text = normalized_text(keyword)
+    tokens = [token for token in keyword_text.split() if len(token) > 1]
+    matched: list[Product] = []
+
+    for product in SAMPLE_PRODUCTS:
+        if product.platform not in enabled:
+            continue
+        title = normalized_text(product.title)
+        if any(token in title for token in tokens) or not tokens:
+            matched.append(product)
+
+    if not matched:
+        matched = [product for product in SAMPLE_PRODUCTS if product.platform in enabled][:3]
+
+    return ProductSearchResult(keyword=keyword, products=matched)
+
+
+def product_score(product: Product) -> float:
+    rating_score = (product.rating or 0) * 20
+    sales_score = min((product.sales or 0) / 50, 30)
+    price_score = max(0, 50 - (product.price / 1000))
+    shipping_score = 5 if (product.shipping_fee or 0) == 0 else 0
+    return round(rating_score + sales_score + price_score + shipping_score, 2)
+
+
+def recommend_products(products: list[Product], problem: str) -> RecommendationResult:
+    if not products:
+        raise HTTPException(status_code=404, detail="找不到商品資料。")
+
+    ranked = sorted(
+        [
+            RecommendationItem(
+                product=product,
+                score=product_score(product),
+                reason=(
+                    f"符合「{problem}」需求；價格 NTD{product.price}，"
+                    f"評分 {product.rating or '無資料'}，銷量 {product.sales or '無資料'}。"
+                ),
+            )
+            for product in products
+        ],
+        key=lambda item: item.score,
+        reverse=True,
+    )
+    cheapest = min(products, key=lambda item: item.price + (item.shipping_fee or 0))
+    best_rated = max(products, key=lambda item: item.rating or 0)
+    rating_summary = (
+        f"最高評分：{best_rated.title}，評分 {best_rated.rating}。"
+        if best_rated.rating is not None
+        else "PChome 搜尋結果未提供商品評分資料。"
+    )
+
+    return RecommendationResult(
+        best_product=ranked[0],
+        ranked_products=ranked,
+        comparison_summary=[
+            f"最低總價：{cheapest.title}，平台 {cheapest.platform}。",
+            rating_summary,
+            f"已比較 {len(products)} 個 PChome 商品。",
+        ],
+        caveats=[
+            "目前已串接 PChome 真實搜尋資料。",
+            "momo 與 Shopee 尚未串接，下一階段可加入更多平台比價。",
+        ],
+    )
+
+
+def build_line_flex_message(result: RecommendationResult) -> dict[str, Any]:
+    bubbles = []
+    for item in result.ranked_products[:3]:
+        product = item.product
+        bubbles.append(
+            {
+                "type": "bubble",
+                "hero": {
+                    "type": "image",
+                    "url": product.image or "https://example.com/product.jpg",
+                    "size": "full",
+                    "aspectRatio": "20:13",
+                    "aspectMode": "cover",
+                },
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": product.title, "weight": "bold", "wrap": True},
+                        {"type": "text", "text": f"NTD {product.price}", "size": "lg", "weight": "bold"},
+                        {"type": "text", "text": f"{product.platform} | score {item.score}", "size": "sm"},
+                        {"type": "text", "text": item.reason, "size": "sm", "wrap": True},
+                    ],
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {
+                            "type": "button",
+                            "style": "primary",
+                            "action": {"type": "uri", "label": "查看商品", "uri": product.url},
+                        }
+                    ],
+                },
+            }
+        )
+
+    return {
+        "type": "flex",
+        "altText": "AI 購物推薦",
+        "contents": {"type": "carousel", "contents": bubbles},
+    }
+
+
+def run_agent(payload: ShoppingRequest) -> AgentRunResult:
+    analysis = analyze_problem(payload)
+    decision = decide_search(analysis)
+    product_search = search_products(decision.selected_solution.search_keyword, decision.platforms)
+    recommendation = recommend_products(product_search.products, analysis.problem)
+    return AgentRunResult(
+        analysis=analysis,
+        decision=decision,
+        product_search=product_search,
+        recommendation=recommendation,
+        line_flex_message=build_line_flex_message(recommendation),
+    )
+
+
+@app.get("/", response_class=HTMLResponse, summary="中文首頁")
+def home() -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/health")
+def health() -> dict[str, bool | str]:
+    return {
+        "status": "ok",
+        "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+    }
+
+
+@app.post("/shopping-advice", response_model=ShoppingAdvice)
+def shopping_advice(payload: ShoppingRequest) -> ShoppingAdvice:
+    analysis = analyze_problem(payload)
+    return ShoppingAdvice(
+        problem=analysis.problem,
+        buying_criteria=[
+            "Match the real user problem.",
+            "Fit the stated budget and preferences.",
+            "Compare price, rating, sales, shipping fee, and platform reliability.",
+        ],
+        solutions=[
+            ProductSuggestion(name=item.method, reason=item.reason, key_features=[item.search_keyword])
+            for item in analysis.solutions
+        ],
+        next_questions=["Do you want me to search products and compare prices now?"],
+    )
+
+
+@app.get("/ask", response_model=ShoppingAdvice)
+def ask_gpt(q: str, budget: str | None = None, preference: str | None = None) -> ShoppingAdvice:
+    return shopping_advice(ShoppingRequest(query=q, budget=budget, preference=preference))
+
+
+@app.post("/agent/analyze", response_model=ProblemAnalysis)
+def agent_analyze(payload: ShoppingRequest) -> ProblemAnalysis:
+    return analyze_problem(payload)
+
+
+@app.post("/agent/decide", response_model=DecisionResult)
+def agent_decide(payload: ShoppingRequest) -> DecisionResult:
+    return decide_search(analyze_problem(payload))
+
+
+@app.get("/agent/search-products", response_model=ProductSearchResult)
+def agent_search_products(keyword: str, platform: list[Platform] | None = None) -> ProductSearchResult:
+    return search_products(keyword, platform)
+
+
+@app.post("/agent/recommend", response_model=RecommendationResult)
+def agent_recommend(payload: ProductSearchResult) -> RecommendationResult:
+    return recommend_products(payload.products, payload.keyword)
+
+
+@app.post("/agent/run", response_model=AgentRunResult)
+def agent_run(payload: ShoppingRequest) -> AgentRunResult:
+    return run_agent(payload)
+
+
+@app.post("/line/webhook")
+async def line_webhook(request: Request) -> dict[str, Any]:
+    raw_body = await request.body()
+    verify_line_signature(raw_body, request.headers.get("x-line-signature"))
+    payload = LineWebhookPayload.model_validate(json.loads(raw_body or b"{}"))
+    replies = []
+    delivery_results = []
+
+    for event in payload.events:
+        if event.type != "message":
+            continue
+        text = ""
+        if event.message and event.message.get("type") == "text":
+            text = str(event.message.get("text", "")).strip()
+        if not text:
+            continue
+
+        result = run_agent(ShoppingRequest(query=text))
+        messages = [
+            {
+                "type": "text",
+                "text": (
+                    f"我判斷你的需求是：{result.analysis.problem}\n"
+                    f"推薦方向：{result.decision.selected_solution.method}"
+                ),
+            },
+            result.line_flex_message,
+        ]
+        replies.append({"replyToken": event.replyToken, "messages": messages})
+        delivery_results.append(reply_to_line(event.replyToken, messages))
+
+    return {
+        "status": "ok",
+        "mode": "reply_api",
+        "note": "如果 replyToken 是本機 dummy，系統會略過實際 LINE 回覆。",
+        "reply_messages": replies,
+        "delivery_results": delivery_results,
+    }
