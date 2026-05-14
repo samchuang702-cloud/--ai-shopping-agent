@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 智慧購物代理</title>
+  <style>
+    body { margin: 0; font-family: "Microsoft JhengHei", "Noto Sans TC", Arial, sans-serif; background: #f6f7f9; color: #1f2937; }
+    header { background: #fff; border-bottom: 1px solid #d8dde6; }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    .topbar { padding: 18px 0; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+    h1 { margin: 0; font-size: 24px; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    main { padding: 24px 0 40px; }
+    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+    section, .card { background: #fff; border: 1px solid #d8dde6; border-radius: 8px; padding: 18px; }
+    label { display: block; font-weight: 700; margin: 14px 0 6px; }
+    textarea, input { width: 100%; border: 1px solid #d8dde6; border-radius: 6px; padding: 10px; font: inherit; box-sizing: border-box; }
+    textarea { min-height: 120px; resize: vertical; }
+    button { border: 0; border-radius: 6px; padding: 10px 14px; font: inherit; font-weight: 700; background: #0f766e; color: #fff; cursor: pointer; }
+    button.secondary { background: #475569; }
+    button.full { width: 100%; margin-top: 16px; }
+    button:disabled { opacity: .65; cursor: wait; }
+    .muted { color: #64748b; font-size: 14px; }
+    .status { min-height: 22px; margin-top: 12px; color: #64748b; }
+    .error { color: #b91c1c; }
+    .grid { display: grid; gap: 14px; }
+    .plans, .products { display: grid; gap: 12px; }
+    .plan { border: 1px solid #d8dde6; border-radius: 8px; padding: 14px; background: #fff; }
+    .items { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .item { border: 1px solid #d8dde6; border-radius: 999px; padding: 6px 10px; background: #f8fafc; }
+    .product-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .product { border: 1px solid #d8dde6; border-radius: 8px; padding: 12px; background: #fff; }
+    .product img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #f8fafc; border-radius: 6px; border: 1px solid #d8dde6; }
+    .price { font-size: 22px; font-weight: 800; color: #115e59; margin: 6px 0; }
+    a { color: #0f766e; }
+    @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .topbar { align-items: flex-start; flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap topbar">
+      <div>
+        <h1>AI 智慧購物代理</h1>
+        <div class="muted">先提供多個解決計畫，選定方法後只推薦你缺少的物品。</div>
+      </div>
+      <a href="/docs">API 文件</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="layout">
+      <section>
+        <h2>輸入問題</h2>
+        <form id="query-form">
+          <label for="query">你想解決什麼問題？</label>
+          <textarea id="query" name="query" required>找除地板發霉的方法</textarea>
+          <label for="budget">預算</label>
+          <input id="budget" name="budget" placeholder="例如 NTD1000">
+          <label for="preference">偏好條件</label>
+          <input id="preference" name="preference" placeholder="例如 不想用味道太重的清潔劑">
+          <button id="analyze-button" class="full" type="submit">產生解決計畫</button>
+          <div id="status" class="status">服務已就緒。</div>
+        </form>
+      </section>
+
+      <div class="grid">
+        <section>
+          <h2>可選擇的解決計畫</h2>
+          <div id="plans" class="plans muted">送出問題後，這裡會顯示多個方法。</div>
+        </section>
+
+        <section>
+          <h2>我缺少的物品</h2>
+          <div id="selected-plan" class="muted">請先選擇一個計畫。</div>
+          <div id="missing-items" class="items"></div>
+          <label for="custom-missing">其他缺少物品</label>
+          <input id="custom-missing" placeholder="例如 漂白水、手套、刷子">
+          <button id="recommend-button" class="full secondary" type="button" disabled>推薦缺少物品</button>
+        </section>
+
+        <section>
+          <h2>商品推薦</h2>
+          <div id="products" class="products muted">選擇缺少物品後，這裡會顯示 PChome 商品。</div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const form = document.querySelector("#query-form");
+    const statusEl = document.querySelector("#status");
+    const plansEl = document.querySelector("#plans");
+    const selectedPlanEl = document.querySelector("#selected-plan");
+    const missingItemsEl = document.querySelector("#missing-items");
+    const customMissingEl = document.querySelector("#custom-missing");
+    const productsEl = document.querySelector("#products");
+    const analyzeButton = document.querySelector("#analyze-button");
+    const recommendButton = document.querySelector("#recommend-button");
+    let currentAnalysis = null;
+    let selectedPlanIndex = null;
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+    }
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function renderPlan(plan, index) {
+      const steps = (plan.steps || []).map(step => `<li>${escapeHtml(step)}</li>`).join("");
+      const cautions = (plan.cautions || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
+      return `
+        <article class="plan">
+          <h3>方案 ${index + 1}：${escapeHtml(plan.method)}</h3>
+          <p>${escapeHtml(plan.reason)}</p>
+          ${steps ? `<strong>做法</strong><ol>${steps}</ol>` : ""}
+          ${cautions ? `<strong>注意事項</strong><ul>${cautions}</ul>` : ""}
+          <button type="button" data-plan-index="${index + 1}">選擇這個計畫</button>
+        </article>
+      `;
+    }
+
+    function renderMissingItems(plan) {
+      selectedPlanEl.innerHTML = `<strong>已選擇：</strong>${escapeHtml(plan.method)}<p>${escapeHtml(plan.reason)}</p>`;
+      const items = plan.required_items || [];
+      missingItemsEl.innerHTML = items.map(item => `
+        <label class="item">
+          <input type="checkbox" value="${escapeHtml(item)}">
+          我沒有 ${escapeHtml(item)}
+        </label>
+      `).join("");
+      recommendButton.disabled = false;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      analyzeButton.disabled = true;
+      recommendButton.disabled = true;
+      productsEl.textContent = "尚未選擇缺少物品。";
+      setStatus("正在產生解決計畫...");
+      const body = {
+        query: form.query.value.trim(),
+        budget: form.budget.value.trim() || null,
+        preference: form.preference.value.trim() || null
+      };
+      try {
+        const response = await fetch("/agent/analyze", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) throw new Error(await response.text());
+        currentAnalysis = await response.json();
+        selectedPlanIndex = null;
+        plansEl.className = "plans";
+        plansEl.innerHTML = currentAnalysis.solutions.map(renderPlan).join("");
+      selectedPlanEl.textContent = "請選擇一個計畫。";
+      missingItemsEl.innerHTML = "";
+      customMissingEl.value = "";
+      setStatus("請選擇你想採用的計畫。");
+      } catch (error) {
+        setStatus("發生錯誤：" + error.message, true);
+      } finally {
+        analyzeButton.disabled = false;
+      }
+    });
+
+    plansEl.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-plan-index]");
+      if (!button || !currentAnalysis) return;
+      selectedPlanIndex = Number(button.dataset.planIndex);
+      renderMissingItems(currentAnalysis.solutions[selectedPlanIndex - 1]);
+      setStatus("勾選你缺少的物品後，再按推薦。");
+    });
+
+    recommendButton.addEventListener("click", async () => {
+      if (!selectedPlanIndex) return;
+      const checked = [...missingItemsEl.querySelectorAll("input:checked")].map(input => input.value);
+      const customItems = customMissingEl.value
+        .split(/[、,，\\n]/)
+        .map(item => item.trim())
+        .filter(Boolean);
+      const missingItems = [...new Set([...checked, ...customItems])];
+      recommendButton.disabled = true;
+      productsEl.textContent = "正在搜尋你缺少的物品...";
+      setStatus("正在搜尋 PChome 商品...");
+      try {
+        const response = await fetch("/agent/plan-products", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            query: form.query.value.trim(),
+            budget: form.budget.value.trim() || null,
+            preference: form.preference.value.trim() || null,
+            plan_index: selectedPlanIndex,
+            missing_items: missingItems
+          })
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        productsEl.className = "products";
+        productsEl.innerHTML = data.product_groups.map(group => `
+          <div class="card">
+            <h3>缺少物品：${escapeHtml(group.item_name)}</h3>
+            <div class="product-grid">
+              ${group.products.map(product => `
+                <article class="product">
+                  ${product.image ? `<img src="${escapeHtml(product.image)}" alt="${escapeHtml(product.title)}">` : ""}
+                  <h3>${escapeHtml(product.title)}</h3>
+                  <div class="price">NTD ${escapeHtml(product.price)}</div>
+                  <div class="muted">${escapeHtml(product.platform)}</div>
+                  <a href="${escapeHtml(product.url)}" target="_blank" rel="noreferrer">查看商品</a>
+                </article>
+              `).join("")}
+            </div>
+          </div>
+        `).join("");
+        setStatus("完成。");
+      } catch (error) {
+        productsEl.textContent = "搜尋失敗。";
+        setStatus("發生錯誤：" + error.message, true);
+      } finally {
+        recommendButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
