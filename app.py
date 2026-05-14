@@ -691,9 +691,88 @@ def fallback_analysis(payload: ShoppingRequest) -> ProblemAnalysis:
             ),
         ]
         problem = "室內潮濕"
+    elif "香" in payload.query or "臭" in payload.query or "味道" in payload.query or "odor" in q:
+        solutions = [
+            SolutionOption(
+                method="低刺激自然擴香",
+                reason="味道較柔和，適合想讓房間有淡香但不刺鼻的人。",
+                search_keyword="擴香瓶 精油",
+                steps=["先保持房間通風。", "使用低濃度擴香或竹枝擴香。", "從少量開始，依接受度增加。"],
+                required_items=["擴香瓶", "精油", "擴香竹"],
+                cautions=["家中有寵物、嬰幼兒或過敏體質時，精油種類要特別確認。"],
+            ),
+            SolutionOption(
+                method="先除臭再淡香",
+                reason="如果房間本身有悶味，先除臭會比直接用香味蓋過更有效。",
+                search_keyword="除臭劑 活性碳",
+                steps=["找出異味來源。", "放置活性碳或除臭用品。", "異味降低後再使用淡香產品。"],
+                required_items=["活性碳", "除臭劑", "擴香瓶"],
+                cautions=["不要用過重香味掩蓋霉味或潮濕味，應先處理源頭。"],
+            ),
+            SolutionOption(
+                method="織品與床鋪香氛",
+                reason="適合主要想改善床單、窗簾、衣櫃附近味道的情境。",
+                search_keyword="衣物芳香噴霧 香氛袋",
+                steps=["清洗或曝曬織品。", "使用衣物芳香噴霧或香氛袋。", "定期更換香氛袋。"],
+                required_items=["衣物芳香噴霧", "香氛袋", "除濕包"],
+                cautions=["先小範圍測試，避免織品染色或味道過重。"],
+            ),
+        ]
+        problem = "房間氣味改善"
+    elif "收納" in payload.query or "整理" in payload.query or "雜亂" in payload.query:
+        solutions = [
+            SolutionOption(
+                method="分類收納盒整理",
+                reason="適合物品種類多、桌面或櫃子容易亂的情況。",
+                search_keyword="收納盒 分隔盒",
+                steps=["先把物品依用途分類。", "淘汰不需要的東西。", "用收納盒或分隔盒固定位置。"],
+                required_items=["收納盒", "分隔盒", "標籤貼"],
+                cautions=["先量尺寸再買，避免收納盒放不進櫃子或桌面。"],
+            ),
+            SolutionOption(
+                method="垂直空間收納",
+                reason="適合租屋處或小房間，能增加牆面與桌上的可用空間。",
+                search_keyword="層架 掛勾 收納架",
+                steps=["找出可用牆面或桌面角落。", "選擇層架、掛勾或桌上架。", "把常用物品放在容易拿的位置。"],
+                required_items=["層架", "掛勾", "桌上收納架"],
+                cautions=["租屋處使用黏貼式配件時，要注意牆面材質與拆除痕跡。"],
+            ),
+            SolutionOption(
+                method="文件與線材整理",
+                reason="適合書桌、工作區或電腦周邊雜亂的情況。",
+                search_keyword="文件架 集線器 束線帶",
+                steps=["把紙本文件集中分類。", "用文件架管理資料。", "用束線帶或集線盒整理線材。"],
+                required_items=["文件架", "束線帶", "集線盒"],
+                cautions=["電源線不要過度彎折或塞太滿，避免散熱與安全問題。"],
+            ),
+        ]
+        problem = "空間整理收納"
     else:
         solutions = [
-            SolutionOption(method="商品搜尋推薦", reason="符合使用者提出的購物需求。", search_keyword=payload.query),
+            SolutionOption(
+                method="低成本 DIY 方案",
+                reason="先用容易取得、成本較低的方式處理問題，適合想先嘗試基本解法的情境。",
+                search_keyword=payload.query,
+                steps=["確認問題範圍。", "準備基本工具與材料。", "先在小範圍測試，再擴大處理。"],
+                required_items=["基本工具", "清潔用品", "手套"],
+                cautions=["若問題涉及安全、電器、化學品或結構損壞，請先確認風險。"],
+            ),
+            SolutionOption(
+                method="購買專用產品方案",
+                reason="使用市售專用產品通常更省時間，適合希望快速處理的人。",
+                search_keyword=payload.query,
+                steps=["選擇符合問題的專用商品。", "依照產品說明使用。", "觀察效果並視情況補強。"],
+                required_items=["專用產品", "手套", "輔助工具"],
+                cautions=["購買前請確認產品適用材質、尺寸、場景與安全限制。"],
+            ),
+            SolutionOption(
+                method="進階或專業處理方案",
+                reason="如果問題較嚴重或 DIY 效果有限，使用更完整的設備或找專業人員會更穩定。",
+                search_keyword=payload.query,
+                steps=["評估問題嚴重程度。", "準備進階工具或尋找專業服務。", "處理後檢查是否復發。"],
+                required_items=["進階工具", "防護用品"],
+                cautions=["若涉及施工、用電、漏水或健康風險，建議找專業協助。"],
+            ),
         ]
         problem = payload.query
 
@@ -706,16 +785,77 @@ def fallback_analysis(payload: ShoppingRequest) -> ProblemAnalysis:
     )
 
 
+def normalize_analysis_payload(data: dict[str, Any], payload: ShoppingRequest) -> dict[str, Any]:
+    data.setdefault("original_query", payload.query)
+    data.setdefault("problem", payload.query)
+    data.setdefault("intent", "尋找可執行的解決方案")
+    data.setdefault("user_context", [value for value in [payload.budget, payload.preference] if value])
+
+    raw_solutions = (
+        data.get("solutions")
+        or data.get("solution_plans")
+        or data.get("plans")
+        or data.get("options")
+        or []
+    )
+    normalized_solutions = []
+    for index, item in enumerate(raw_solutions, start=1):
+        if not isinstance(item, dict):
+            continue
+        method = str(item.get("method") or item.get("name") or f"方案 {index}").strip()
+        reason = str(item.get("reason") or item.get("description") or "此方案可作為其中一種可行做法。").strip()
+        required_items = item.get("required_items") or item.get("items") or []
+        if isinstance(required_items, list):
+            required_items = [
+                str(part.get("name") if isinstance(part, dict) else part).strip()
+                for part in required_items
+                if str(part.get("name") if isinstance(part, dict) else part).strip()
+            ]
+        elif isinstance(required_items, str):
+            required_items = [part.strip() for part in required_items.replace("、", ",").split(",") if part.strip()]
+        steps = item.get("steps") or []
+        if isinstance(steps, str):
+            steps = [part.strip() for part in steps.split("\n") if part.strip()]
+        cautions = item.get("cautions") or []
+        if isinstance(cautions, str):
+            cautions = [part.strip() for part in cautions.split("\n") if part.strip()]
+        search_keyword = str(
+            item.get("search_keyword")
+            or " ".join(required_items[:2])
+            or method
+            or payload.query
+        ).strip()
+        normalized_solutions.append(
+            {
+                "method": method,
+                "reason": reason,
+                "search_keyword": search_keyword,
+                "steps": steps,
+                "required_items": required_items,
+                "cautions": cautions,
+            }
+        )
+
+    if len(normalized_solutions) < 2:
+        return fallback_analysis(payload).model_dump()
+
+    data["solutions"] = normalized_solutions[:4]
+    return data
+
+
 def analyze_problem(payload: ShoppingRequest) -> ProblemAnalysis:
     system_prompt = (
         "You are the Problem Analyzer and Solution Generator of a shopping agent. "
         "Answer in Traditional Chinese. Return JSON with original_query, problem, "
         "intent, user_context, and solutions. Provide 2 to 4 different solution plans. "
         "Each solution needs method, reason, search_keyword, steps, required_items, and cautions. "
-        "Do not jump directly to one product; first provide practical plans the user can choose from."
+        "Do not jump directly to one product; first provide practical plans the user can choose from. "
+        "Make the plans work for any user problem, not only shopping requests. "
+        "For required_items, list concrete purchasable items or tools needed by each plan."
     )
     try:
         data = llm_json(system_prompt, payload.model_dump_json())
+        data = normalize_analysis_payload(data, payload)
         return ProblemAnalysis.model_validate(data)
     except (HTTPException, ValidationError):
         return fallback_analysis(payload)
@@ -1052,6 +1192,8 @@ INDEX_HTML = """
           <h2>我缺少的物品</h2>
           <div id="selected-plan" class="muted">請先選擇一個計畫。</div>
           <div id="missing-items" class="items"></div>
+          <label for="custom-missing">其他缺少物品</label>
+          <input id="custom-missing" placeholder="例如 漂白水、手套、刷子">
           <button id="recommend-button" class="full secondary" type="button" disabled>推薦缺少物品</button>
         </section>
 
@@ -1069,6 +1211,7 @@ INDEX_HTML = """
     const plansEl = document.querySelector("#plans");
     const selectedPlanEl = document.querySelector("#selected-plan");
     const missingItemsEl = document.querySelector("#missing-items");
+    const customMissingEl = document.querySelector("#custom-missing");
     const productsEl = document.querySelector("#products");
     const analyzeButton = document.querySelector("#analyze-button");
     const recommendButton = document.querySelector("#recommend-button");
@@ -1134,9 +1277,10 @@ INDEX_HTML = """
         selectedPlanIndex = null;
         plansEl.className = "plans";
         plansEl.innerHTML = currentAnalysis.solutions.map(renderPlan).join("");
-        selectedPlanEl.textContent = "請選擇一個計畫。";
-        missingItemsEl.innerHTML = "";
-        setStatus("請選擇你想採用的計畫。");
+      selectedPlanEl.textContent = "請選擇一個計畫。";
+      missingItemsEl.innerHTML = "";
+      customMissingEl.value = "";
+      setStatus("請選擇你想採用的計畫。");
       } catch (error) {
         setStatus("發生錯誤：" + error.message, true);
       } finally {
@@ -1155,6 +1299,11 @@ INDEX_HTML = """
     recommendButton.addEventListener("click", async () => {
       if (!selectedPlanIndex) return;
       const checked = [...missingItemsEl.querySelectorAll("input:checked")].map(input => input.value);
+      const customItems = customMissingEl.value
+        .split(/[、,，\\n]/)
+        .map(item => item.trim())
+        .filter(Boolean);
+      const missingItems = [...new Set([...checked, ...customItems])];
       recommendButton.disabled = true;
       productsEl.textContent = "正在搜尋你缺少的物品...";
       setStatus("正在搜尋 PChome 商品...");
@@ -1167,7 +1316,7 @@ INDEX_HTML = """
             budget: form.budget.value.trim() || null,
             preference: form.preference.value.trim() || null,
             plan_index: selectedPlanIndex,
-            missing_items: checked
+            missing_items: missingItems
           })
         });
         if (!response.ok) throw new Error(await response.text());
